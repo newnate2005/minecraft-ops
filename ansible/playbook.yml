@@ -1,0 +1,93 @@
+---
+- name: Configure Minecraft server
+  hosts: minecraft
+  become: true
+
+  vars:
+    aws_account_id: "238039006137"
+    ecr_image: "minecraft-server:mc-1.21.11-build2"
+    s3_bucket: "minecraft-backups-238039006137" 
+
+  tasks:
+    - name: Install Docker prerequisites
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+        update_cache: true
+
+    - name: Add Docker GPG key
+      shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+      args:
+        creates: /etc/apt/keyrings/docker.asc
+
+    - name: Add Docker apt repository
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Install Docker Engine
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Ensure Docker is running
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Copy backup script to server
+      copy:
+        src: ../scripts/backup.sh
+        dest: /home/ubuntu/backup.sh
+        mode: '0755'
+
+    - name: Authenticate to ECR
+      shell: |
+        aws ecr get-login-password --region us-east-1 | \
+        docker login --username AWS --password-stdin \
+        {{ aws_account_id }}.dkr.ecr.us-east-1.amazonaws.com
+
+    - name: Pull Minecraft image
+      community.docker.docker_image:
+        name: {{ aws_account_id }}.dkr.ecr.us-east-1.amazonaws.com/{{ ecr_image }} 
+        source: pull
+
+    - name: Get latest backup from S3
+      shell: |
+        aws s3 ls s3://{{ s3_bucket }}/backups/ | sort | tail -1 | awk '{print $4}'
+      register: latest_backup
+
+    - name: Restore world from S3
+      shell: |
+        mkdir -p /opt/minecraft/data
+        aws s3 cp s3://{{ s3_bucket }}/backups/{{ latest_backup.stdout }} /tmp/world-backup.tar.gz
+        rm -rf /opt/minecraft/data/world
+        tar -xzf /tmp/world-backup.tar.gz -C /opt/minecraft/data
+      args:
+        creates: /opt/minecraft/data/world
+
+    - name: Start Minecraft container
+      community.docker.docker_container:
+        name: minecraft
+        image: {{ aws_account_id }}.dkr.ecr.us-east-1.amazonaws.com/{{ ecr_image }}
+        state: started
+        restart_policy: unless-stopped
+        environment:
+          EULA: "TRUE"
+        ports:
+          - "25565:25565"
+        volumes:
+          - /opt/minecraft/data:/data
