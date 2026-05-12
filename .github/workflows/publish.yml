@@ -30,6 +30,9 @@ jobs:
           docker tag 238039006137.dkr.ecr.us-east-1.amazonaws.com/minecraft-server:mc-1.21.11-build2 \
             238039006137.dkr.ecr.us-east-1.amazonaws.com/minecraft-server:${{ github.ref_name }}
 
+      - name: Install nmap
+        run: sudo apt-get install -y nmap
+
       - name: Smoke test
         run: |
           docker run -d --name mc-test -e EULA=TRUE -p 25565:25565 \
