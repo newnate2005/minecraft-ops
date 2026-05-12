@@ -10,7 +10,6 @@ terraform {
 
 provider "aws" {
   region = "us-east-1"
-  # To use a named profile instead of default, add: profile = "profile-name"
 }
 
 data "aws_vpc" "default" {
@@ -61,7 +60,7 @@ resource "aws_security_group" "minecraft" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # TODO: Figure out my IP later
+    cidr_blocks = ["50.38.104.203/32"]
   }
 
   ingress {

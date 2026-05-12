@@ -6,7 +6,17 @@
   vars:
     aws_account_id: "238039006137"
     ecr_image: "minecraft-server:mc-1.21.11-build2"
-    s3_bucket: "minecraft-backups-238039006137" 
+    s3_bucket: "minecraft-backups-238039006137"
+    data_dir: "/opt/minecraft/data"
+
+  pre_tasks:
+      - name: Wait for SSH to be ready
+        wait_for_connection:
+          delay: 10
+          timeout: 120
+
+      - name: Gather facts
+        gather_facts:
 
   tasks:
     - name: Install Docker prerequisites
@@ -48,6 +58,12 @@
         state: started
         enabled: true
 
+    - name: Install AWS CLI
+      snap:
+        name: aws-cli
+        classic: true
+        state: present
+
     - name: Copy backup script to server
       copy:
         src: ../scripts/backup.sh
@@ -59,11 +75,13 @@
         aws ecr get-login-password --region us-east-1 | \
         docker login --username AWS --password-stdin \
         {{ aws_account_id }}.dkr.ecr.us-east-1.amazonaws.com
+      changed_when: false
 
     - name: Pull Minecraft image
       community.docker.docker_image:
         name: "{{ aws_account_id }}.dkr.ecr.us-east-1.amazonaws.com/{{ ecr_image }}" 
         source: pull
+        force_source: true
 
     - name: Get latest backup from S3
       shell: |
@@ -72,12 +90,13 @@
 
     - name: Restore world from S3
       shell: |
-        mkdir -p /opt/minecraft/data
+        mkdir -p {{ data_dir }}
         aws s3 cp s3://{{ s3_bucket }}/backups/{{ latest_backup.stdout }} /tmp/world-backup.tar.gz
-        rm -rf /opt/minecraft/data/world
-        tar -xzf /tmp/world-backup.tar.gz -C /opt/minecraft/data
+        rm -rf {{ data_dir }}/world
+        tar -xzf /tmp/world-backup.tar.gz -C {{ data_dir }}
       args:
-        creates: /opt/minecraft/data/world
+        creates: "{{ data_dir }}/world"
+      when: latest_backup.stdout | length > 0
 
     - name: Start Minecraft container
       community.docker.docker_container:
@@ -85,9 +104,11 @@
         image: "{{ aws_account_id }}.dkr.ecr.us-east-1.amazonaws.com/{{ ecr_image }}"
         state: started
         restart_policy: unless-stopped
-        environment:
+        env:
           EULA: "TRUE"
+          MOTD: "Nathaniel White's Minecraft Server"
+          MEMORY: "2G"
         ports:
           - "25565:25565"
         volumes:
-          - /opt/minecraft/data:/data
+          - "{{ data_dir }}:/data"
