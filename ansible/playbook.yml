@@ -62,7 +62,7 @@
 
     - name: Pull Minecraft image
       community.docker.docker_image:
-        name: {{ aws_account_id }}.dkr.ecr.us-east-1.amazonaws.com/{{ ecr_image }} 
+        name: "{{ aws_account_id }}.dkr.ecr.us-east-1.amazonaws.com/{{ ecr_image }}" 
         source: pull
 
     - name: Get latest backup from S3
@@ -82,7 +82,7 @@
     - name: Start Minecraft container
       community.docker.docker_container:
         name: minecraft
-        image: {{ aws_account_id }}.dkr.ecr.us-east-1.amazonaws.com/{{ ecr_image }}
+        image: "{{ aws_account_id }}.dkr.ecr.us-east-1.amazonaws.com/{{ ecr_image }}"
         state: started
         restart_policy: unless-stopped
         environment:
