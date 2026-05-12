@@ -6,8 +6,10 @@
   vars:
     aws_account_id: "238039006137"
     ecr_image: "minecraft-server:mc-1.21.11-build2"
+    mc_version: "1.21.11"
     s3_bucket: "minecraft-backups-238039006137"
     data_dir: "/opt/minecraft/data"
+    
 
   pre_tasks:
       - name: Wait for SSH to be ready
@@ -107,6 +109,7 @@
         env:
           EULA: "TRUE"
           MOTD: "Nathaniel White's Minecraft Server"
+          VERSION: "{{ mc_version }}"
           MEMORY: "2G"
         ports:
           - "25565:25565"

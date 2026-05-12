@@ -84,3 +84,25 @@ resource "aws_security_group" "minecraft" {
   })
 }
 
+resource "null_resource" "ansible" {
+  depends_on = [aws_instance.minecraft]
+
+  triggers = {
+    instance_id = aws_instance.minecraft.id
+  }
+
+  provisioner "local-exec" {
+    command = <<EOT
+      # Wait for SSH to be available
+      until ssh -i ~/.ssh/cs312-key.pem -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@${aws_instance.minecraft.public_ip} echo ready; do
+        sleep 5
+      done
+      # Update hosts.ini
+      echo "[minecraft]" > ../ansible/hosts.ini
+      echo "${aws_instance.minecraft.public_ip} ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/cs312-key.pem" >> ../ansible/hosts.ini
+      # Run playbook
+      cd ../ansible && ansible-playbook playbook.yml
+    EOT
+  }
+}
+

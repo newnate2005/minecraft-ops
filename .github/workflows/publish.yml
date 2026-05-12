@@ -1,0 +1,51 @@
+name: Publish Minecraft Image
+
+on:
+  push:
+    tags:
+      - 'mc-*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Pull and retag image
+        run: |
+          docker pull 238039006137.dkr.ecr.us-east-1.amazonaws.com/minecraft-server:mc-1.21.11-build2
+          docker tag 238039006137.dkr.ecr.us-east-1.amazonaws.com/minecraft-server:mc-1.21.11-build2 \
+            238039006137.dkr.ecr.us-east-1.amazonaws.com/minecraft-server:${{ github.ref_name }}
+
+      - name: Smoke test
+        run: |
+          docker run -d --name mc-test -e EULA=TRUE -p 25565:25565 \
+            238039006137.dkr.ecr.us-east-1.amazonaws.com/minecraft-server:${{ github.ref_name }}
+          echo "Waiting for Minecraft to start..."
+          for i in $(seq 1 24); do
+            if nmap -sV -Pn -p 25565 localhost | grep -q "open"; then
+              echo "Server is up!"
+              exit 0
+            fi
+            echo "Attempt $i/24, waiting 5s..."
+            sleep 5
+          done
+          echo "Server failed to start in time"
+          exit 1
+
+      - name: Push image to ECR
+        run: |
+          docker push 238039006137.dkr.ecr.us-east-1.amazonaws.com/minecraft-server:${{ github.ref_name }}
