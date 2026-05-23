@@ -38,11 +38,11 @@ locals {
 }
 
 resource "aws_instance" "minecraft" {
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = var.instance_type
-  key_name               = var.key_name
-  vpc_security_group_ids = [aws_security_group.minecraft.id]
-  iam_instance_profile = "LabInstanceProfile"
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.instance_type
+  key_name                    = var.key_name
+  vpc_security_group_ids      = [aws_security_group.minecraft.id]
+  iam_instance_profile        = "LabInstanceProfile"
   associate_public_ip_address = true
 
   tags = merge(local.common_tags, {
@@ -105,4 +105,3 @@ resource "null_resource" "ansible" {
     EOT
   }
 }
-

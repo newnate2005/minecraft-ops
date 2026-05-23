@@ -8,57 +8,52 @@
     ecr_image: "minecraft-server:mc-1.21.11-build2"
     mc_version: "1.21.11"
     s3_bucket: "minecraft-backups-238039006137"
-    data_dir: "/opt/minecraft/data"
-    
 
   pre_tasks:
-      - name: Wait for SSH to be ready
-        wait_for_connection:
-          delay: 10
-          timeout: 120
+    - name: Wait for SSH to be ready
+      wait_for_connection:
+        delay: 10
+        timeout: 120
 
-      - name: Gather facts
-        gather_facts:
+    - name: Gather facts
+      gather_facts:
 
   tasks:
-    - name: Install Docker prerequisites
-      apt:
-        name:
-          - ca-certificates
-          - curl
-          - gnupg
-        state: present
-        update_cache: true
-
-    - name: Add Docker GPG key
-      shell: |
-        install -m 0755 -d /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-        chmod a+r /etc/apt/keyrings/docker.asc
+    - name: Install k3s
+      shell: curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -
       args:
-        creates: /etc/apt/keyrings/docker.asc
+        creates: /usr/local/bin/k3s
 
-    - name: Add Docker apt repository
-      shell: |
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
-      args:
-        creates: /etc/apt/sources.list.d/docker.list
+    - name: Wait for k3s to be ready
+      shell: kubectl get nodes
+      register: k3s_ready
+      until: "'Ready' in k3s_ready.stdout"
+      retries: 12
+      delay: 10
+      changed_when: false
 
-    - name: Install Docker Engine
-      apt:
-        name:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-          - docker-compose-plugin
+    - name: Create .kube directory for ubuntu user
+      file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    - name: Copy kubeconfig for ubuntu user
+      copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: /home/ubuntu/.kube/config
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+        remote_src: true
+
+    - name: Set KUBECONFIG in .bashrc
+      lineinfile:
+        path: /home/ubuntu/.bashrc
+        line: 'export KUBECONFIG=/home/ubuntu/.kube/config'
         state: present
-        update_cache: true
-
-    - name: Ensure Docker is running
-      service:
-        name: docker
-        state: started
-        enabled: true
 
     - name: Install AWS CLI
       snap:
@@ -72,46 +67,70 @@
         dest: /home/ubuntu/backup.sh
         mode: '0755'
 
-    - name: Authenticate to ECR
+    - name: Schedule daily backup via cron
+      cron:
+        name: "minecraft world backup"
+        hour: "3"
+        minute: "0"
+        job: "/home/ubuntu/backup.sh >> /var/log/minecraft-backup.log 2>&1"
+        user: root
+
+    - name: Authenticate ECR for containerd
       shell: |
+        mkdir -p /root/.docker
         aws ecr get-login-password --region us-east-1 | \
-        docker login --username AWS --password-stdin \
-        {{ aws_account_id }}.dkr.ecr.us-east-1.amazonaws.com
+        python3 -c "
+        import sys, json, base64
+        token = sys.stdin.read().strip()
+        creds = base64.b64encode(b'AWS:' + token.encode()).decode()
+        config = {
+          'auths': {
+            '238039006137.dkr.ecr.us-east-1.amazonaws.com': {
+              'auth': creds
+            }
+          }
+        }
+        print(json.dumps(config))
+        " > /root/.docker/config.json
       changed_when: false
 
-    - name: Pull Minecraft image
-      community.docker.docker_image:
-        name: "{{ aws_account_id }}.dkr.ecr.us-east-1.amazonaws.com/{{ ecr_image }}" 
-        source: pull
-        force_source: true
+    - name: Copy Kubernetes manifests
+      copy:
+        src: minecraft.yml
+        dest: /home/ubuntu/minecraft.yml
+        mode: '0644'
+
+    - name: Apply Kubernetes manifests
+      shell: kubectl apply -f /home/ubuntu/minecraft.yml
+      changed_when: false
+
+    - name: Wait for PVC to be bound
+      shell: kubectl get pvc minecraft-data -o jsonpath='{.status.phase}'
+      register: pvc_status
+      until: pvc_status.stdout == "Bound"
+      retries: 12
+      delay: 5
+      changed_when: false
+
+    - name: Get PVC host path
+      shell: |
+        kubectl get pvc minecraft-data -o jsonpath='{.spec.volumeName}' | \
+        xargs -I{} find /var/lib/rancher/k3s/storage -maxdepth 1 -name "{}*" -type d
+      register: pvc_path
+      changed_when: false
 
     - name: Get latest backup from S3
-      shell: |
-        aws s3 ls s3://{{ s3_bucket }}/backups/ | sort | tail -1 | awk '{print $4}'
+      shell: aws s3 ls s3://{{ s3_bucket }}/backups/ | sort | tail -1 | awk '{print $4}'
       register: latest_backup
+      changed_when: false
 
     - name: Restore world from S3
       shell: |
-        mkdir -p {{ data_dir }}
         aws s3 cp s3://{{ s3_bucket }}/backups/{{ latest_backup.stdout }} /tmp/world-backup.tar.gz
-        rm -rf {{ data_dir }}/world
-        tar -xzf /tmp/world-backup.tar.gz -C {{ data_dir }}
+        rm -rf {{ pvc_path.stdout }}/world
+        tar -xzf /tmp/world-backup.tar.gz -C {{ pvc_path.stdout }}
       args:
-        creates: "{{ data_dir }}/world"
-      when: latest_backup.stdout | length > 0
-
-    - name: Start Minecraft container
-      community.docker.docker_container:
-        name: minecraft
-        image: "{{ aws_account_id }}.dkr.ecr.us-east-1.amazonaws.com/{{ ecr_image }}"
-        state: started
-        restart_policy: unless-stopped
-        env:
-          EULA: "TRUE"
-          MOTD: "Nathaniel White's Minecraft Server"
-          VERSION: "{{ mc_version }}"
-          MEMORY: "2G"
-        ports:
-          - "25565:25565"
-        volumes:
-          - "{{ data_dir }}:/data"
+        creates: "{{ pvc_path.stdout }}/world"
+      when:
+        - latest_backup.stdout | length > 0
+        - pvc_path.stdout | length > 0
