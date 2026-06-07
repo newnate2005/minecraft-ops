@@ -2,6 +2,8 @@
 - name: Configure Minecraft server
   hosts: minecraft
   become: true
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
 
   vars:
     aws_account_id: "238039006137"
@@ -83,15 +85,23 @@
         import sys, json, base64
         token = sys.stdin.read().strip()
         creds = base64.b64encode(b'AWS:' + token.encode()).decode()
-        config = {
-          'auths': {
-            '238039006137.dkr.ecr.us-east-1.amazonaws.com': {
-              'auth': creds
-            }
-          }
-        }
+        config = {'auths': {'238039006137.dkr.ecr.us-east-1.amazonaws.com': {'auth': creds}}}
         print(json.dumps(config))
         " > /root/.docker/config.json
+      changed_when: false
+
+    - name: Restart k3s to pick up ECR credentials
+      systemd:
+        name: k3s
+        state: restarted
+        daemon_reload: true
+
+    - name: Wait for k3s to be ready after restart
+      shell: kubectl get nodes
+      register: k3s_ready
+      until: "'Ready' in k3s_ready.stdout"
+      retries: 12
+      delay: 10
       changed_when: false
 
     - name: Copy Kubernetes manifests
@@ -134,3 +144,58 @@
       when:
         - latest_backup.stdout | length > 0
         - pvc_path.stdout | length > 0
+
+# --- Monitoring Stack ---
+    - name: Install Helm
+      shell: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      args:
+        creates: /usr/local/bin/helm
+
+    - name: Add prometheus-community Helm repo
+      shell: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && helm repo update
+      changed_when: false
+
+    - name: Copy monitoring Helm values
+      copy:
+        src: monitoring-values.yml
+        dest: /home/ubuntu/monitoring-values.yml
+        mode: '0644'
+
+    - name: Install kube-prometheus-stack
+      shell: |
+        helm upgrade --install kube-prometheus-stack \
+          prometheus-community/kube-prometheus-stack \
+          --namespace monitoring \
+          --create-namespace \
+          -f /home/ubuntu/monitoring-values.yml
+      changed_when: false
+
+    - name: Copy alert rules
+      copy:
+        src: alerts.yml
+        dest: /home/ubuntu/alerts.yml
+        mode: '0644'
+
+    - name: Apply alert rules
+      shell: kubectl apply -f /home/ubuntu/alerts.yml
+      changed_when: false
+
+    - name: Copy Grafana dashboard ConfigMap
+      copy:
+        src: minecraft-dashboard.yml
+        dest: /home/ubuntu/minecraft-dashboard.yml
+        mode: '0644'
+
+    - name: Apply Grafana dashboard ConfigMap
+      shell: kubectl apply -f /home/ubuntu/minecraft-dashboard.yml
+      changed_when: false
+
+    - name: Copy ServiceMonitor manifest
+      copy:
+        src: minecraft-servicemonitor.yml
+        dest: /home/ubuntu/minecraft-servicemonitor.yml
+        mode: '0644'
+
+    - name: Apply ServiceMonitor (after CRDs are ready)
+      shell: kubectl apply -f /home/ubuntu/minecraft-servicemonitor.yml
+      changed_when: false

@@ -1,0 +1,20 @@
+---
+# Tells Prometheus to scrape the metrics service
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: minecraft
+  namespace: default
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - default
+  selector:
+    matchLabels:
+      app: minecraft
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics

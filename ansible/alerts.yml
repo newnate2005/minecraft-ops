@@ -1,0 +1,60 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: minecraft-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: minecraft.rules
+      rules:
+
+        # Alert 1: Player-visible — server unreachable
+        - alert: MinecraftServiceDown
+          expr: |
+            (minecraft_status_healthy or on() vector(0)) == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Minecraft server is unreachable"
+            description: >
+              mc-monitor cannot reach the Minecraft port. Players cannot connect.
+              Pod: {{ $labels.pod }}. Check pod status and recent events.
+            runbook: "Runbook 1: Minecraft Service Down"
+
+        # Alert 2: Crash loop — pod restarting repeatedly
+        - alert: MinecraftPodCrashLooping
+          expr: |
+            increase(kube_pod_container_status_restarts_total{
+              namespace="default",
+              pod=~"minecraft-.*",
+              container="minecraft"
+            }[10m]) > 3
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Minecraft pod is crash-looping"
+            description: >
+              The minecraft container restarted more than 3 times in the last 10 minutes.
+              Pod: {{ $labels.pod }}. Run kubectl logs --previous and kubectl describe pod.
+            runbook: "Runbook 2: Crash Loop"
+
+        # Alert 3: Disk approaching full — world data at risk
+        - alert: NodeDiskUsageHigh
+          expr: |
+            (
+              1 - node_filesystem_avail_bytes{mountpoint="/", fstype!="tmpfs"}
+                / node_filesystem_size_bytes{mountpoint="/", fstype!="tmpfs"}
+            ) * 100 > 80
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Node disk usage above 80%"
+            description: >
+              Root filesystem is {{ printf "%.1f" $value }}% full.
+              World data and monitoring TSDB are at risk. Clean up or expand storage.
+            runbook: "Runbook 3: High Disk Usage"
